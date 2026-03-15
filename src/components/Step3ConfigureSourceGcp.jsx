@@ -1,21 +1,35 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResult, onBack }) {
+const ORG_ID_PATTERN = /^\d{10,}$/
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
+
+const PREFILL_CREDS = {
+  adminEmail: import.meta.env.VITE_GCP_ADMIN_EMAIL || '',
+  credentials: (() => {
+    try {
+      return import.meta.env.VITE_GCP_CREDENTIALS ? JSON.stringify(JSON.parse(import.meta.env.VITE_GCP_CREDENTIALS), null, 2) : ''
+    } catch {
+      return import.meta.env.VITE_GCP_CREDENTIALS || ''
+    }
+  })(),
+}
+
+export default function Step3ConfigureSourceGcp({ auth, initialConfig, onResult, onBack }) {
   const [form, setForm] = useState({
-    sourceName: 'CIEM Azure',
-    description: 'CIEM source for Azure',
+    sourceName: 'CIEM GCP',
+    description: 'CIEM source for GCP',
     ownerQuery: '',
     ownerId: '',
     ownerName: '',
-    connectorScriptName: 'ciem-azure-connector-script',
-    clientId: '00000000-0000-0000-0000-000000000000',
-    tenantId: '11111111-1111-1111-1111-111111111111',
-    clientSecret: 'azure-client-secret-example',
-    instanceIds: '',
-    tenantType: 'Global',
+    connectorScriptName: 'ciem-gcp-connector-script',
+    clusterId: '52d554752d9b43aab1ea4a1edcfa4fc2',
+    organizationId: '1063145834985',
+    adminEmail: '',
+    credentials: '',
   })
+  const [prefillActive, setPrefillActive] = useState(false)
 
-  // Pre-fill when returning from Step 4 (error → go back)
   useEffect(() => {
     if (initialConfig) {
       setForm((prev) => ({ ...prev, ...initialConfig }))
@@ -62,19 +76,17 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
   const [searchError, setSearchError] = useState(null)
   const [fieldErrors, setFieldErrors] = useState({})
   const [loading, setLoading] = useState(false)
-  const [phase, setPhase] = useState('idle') // 'idle' | 'creating' | 'patching' | 'testing'
+  const [phase, setPhase] = useState('idle') // 'idle' | 'creating' | 'patching' | 'testing' | 'finalizing'
   const [detectLoading, setDetectLoading] = useState(false)
-  const [detectMatches, setDetectMatches] = useState(null) // null | [] | [{scriptName, name}]
+  const [detectMatches, setDetectMatches] = useState(null)
   const [detectError, setDetectError] = useState(null)
-
-  // Debug: inspect an existing source to discover correct connectorAttribute key names
-  const [debugSourceId, setDebugSourceId] = useState('')
-  const [debugLoading, setDebugLoading] = useState(false)
-  const [debugResult, setDebugResult] = useState(null) // { connectorAttributes, connectionType, connector } | { error }
   const [debugOpen, setDebugOpen] = useState(false)
-  const [sourceListLoading, setSourceListLoading] = useState(false)
-  const [sourceList, setSourceList] = useState(null) // null | [] | [{id, name, connector, connectionType}]
-  const [sourceListError, setSourceListError] = useState(null)
+  const [debugLoading, setDebugLoading] = useState(false)
+  const [debugError, setDebugError] = useState(null)
+  const [baselineSourceId, setBaselineSourceId] = useState('c3b91ed703354187ab8ab81e3309741f')
+  const [candidateSourceId, setCandidateSourceId] = useState('')
+  const [baselineSource, setBaselineSource] = useState(null)
+  const [candidateSource, setCandidateSource] = useState(null)
 
   const searchTimerRef = useRef(null)
   const dropdownRef = useRef(null)
@@ -96,8 +108,10 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
         setShowDropdown(false)
         return
       }
+
       setSearchLoading(true)
       setSearchError(null)
+
       try {
         const res = await fetch('/api/v3/search', {
           method: 'POST',
@@ -108,7 +122,7 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
           },
           body: JSON.stringify({
             indices: ['identities'],
-            query: { query: query },
+            query: { query },
             sort: ['name'],
             limit: 10,
           }),
@@ -178,12 +192,43 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
     const val = e.target.value
     setForm((f) => ({ ...f, [field]: val }))
     setFieldErrors((fe) => ({ ...fe, [field]: undefined }))
+    if ((field === 'adminEmail' || field === 'credentials') && prefillActive) setPrefillActive(false)
+  }
+
+  const applyPrefill = () => {
+    if (prefillActive) {
+      setForm((f) => ({ ...f, adminEmail: '', credentials: '' }))
+      setPrefillActive(false)
+    } else {
+      setForm((f) => ({ ...f, ...PREFILL_CREDS }))
+      setFieldErrors((fe) => ({ ...fe, adminEmail: undefined, credentials: undefined }))
+      setPrefillActive(true)
+    }
+  }
+
+  const handleCredentialsFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      setForm((f) => ({ ...f, credentials: text }))
+      setFieldErrors((fe) => ({ ...fe, credentials: undefined }))
+    } catch (err) {
+      setFieldErrors((fe) => ({
+        ...fe,
+        credentials: `Failed to read file: ${err.message}`,
+      }))
+    } finally {
+      e.target.value = ''
+    }
   }
 
   const detectConnectors = async () => {
     setDetectLoading(true)
     setDetectMatches(null)
     setDetectError(null)
+
     try {
       const res = await fetch('/api/v3/connectors?limit=250', {
         headers: {
@@ -201,7 +246,7 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
       }
 
       const list = Array.isArray(data) ? data : (data?.items ?? data?.data ?? [])
-      const keywords = ['azure', 'ciem', 'cam', 'entra', 'msentraid']
+      const keywords = ['gcp', 'google', 'ciem', 'cam', 'workspace']
       const matches = list.filter((c) => {
         const haystack = `${c.scriptName || ''} ${c.name || ''} ${c.type || ''}`.toLowerCase()
         return keywords.some((k) => haystack.includes(k))
@@ -218,87 +263,156 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
     }
   }
 
-  const inspectSource = async () => {
-    if (!debugSourceId.trim()) {
-      setDebugResult({ error: 'Source ID를 입력하거나 위의 목록에서 Inspect 버튼을 클릭하세요.' })
-      return
-    }
-    setDebugLoading(true)
-    setDebugResult(null)
-    try {
-      const url = `/api/v3/sources/${debugSourceId.trim()}`
-      const res = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${auth.token}`,
-          'Content-Type': 'application/json',
-          'X-Tenant': auth.tenant,
-        },
-      })
-      const text = await res.text()
-      let data
-      try { data = JSON.parse(text) } catch { data = null }
+  const fetchSource = async (sourceId) => {
+    const res = await fetch(`/api/v3/sources/${sourceId}`, {
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        'Content-Type': 'application/json',
+        'X-Tenant': auth.tenant,
+      },
+    })
+    const text = await res.text()
+    let data
+    try { data = JSON.parse(text) } catch { data = null }
 
-      if (!res.ok) {
-        setDebugResult({
-          error: `HTTP ${res.status} — ${data?.message || data?.detailCode || text.slice(0, 300)}`,
-          raw: text.slice(0, 1000),
-        })
-      } else if (!data) {
-        setDebugResult({ error: 'Response was not valid JSON.', raw: text.slice(0, 500) })
-      } else {
-        setDebugResult({
-          connectorAttributes: data.connectorAttributes ?? {},
-          connectionType: data.connectionType,
-          connector: data.connector,
-          cluster: data.cluster,
-          raw: text,
-        })
-      }
-    } catch (err) {
-      setDebugResult({ error: `Network error: ${err.message}`, raw: null })
-    } finally {
-      setDebugLoading(false)
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${data?.message || data?.detailCode || text.slice(0, 300)}`)
+    }
+
+    return data
+  }
+
+  const fetchManagedCluster = async (clusterId) => {
+    const res = await fetch(`/api/v3/managed-clusters/${clusterId}`, {
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        'Content-Type': 'application/json',
+        'X-Tenant': auth.tenant,
+      },
+    })
+    const text = await res.text()
+    let data
+    try { data = JSON.parse(text) } catch { data = null }
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${data?.message || data?.detailCode || text.slice(0, 300)}`)
+    }
+
+    return data
+  }
+
+  const toBase64Url = (input) => {
+    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input)
+    let binary = ''
+    for (const b of bytes) binary += String.fromCharCode(b)
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  }
+
+  const pemToArrayBuffer = (pem) => {
+    const base64 = pem
+      .replace(/-----BEGIN PUBLIC KEY-----/g, '')
+      .replace(/-----END PUBLIC KEY-----/g, '')
+      .replace(/\s+/g, '')
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+    return bytes.buffer
+  }
+
+  const encryptForCluster = async ({ sourceId, publicKeyPem, plaintext }) => {
+    const protectedHeader = {
+      alg: 'RSA-OAEP-256',
+      enc: 'A256GCM',
+      'X-SP-Policy': {
+        allowedSources: [sourceId],
+      },
+    }
+
+    const protectedHeaderBytes = textEncoder.encode(JSON.stringify(protectedHeader))
+    const protectedHeaderB64 = toBase64Url(protectedHeaderBytes)
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const cekBytes = crypto.getRandomValues(new Uint8Array(32))
+
+    const rsaKey = await crypto.subtle.importKey(
+      'spki',
+      pemToArrayBuffer(publicKeyPem),
+      { name: 'RSA-OAEP', hash: 'SHA-256' },
+      false,
+      ['encrypt']
+    )
+
+    const encryptedKey = await crypto.subtle.encrypt(
+      { name: 'RSA-OAEP' },
+      rsaKey,
+      cekBytes
+    )
+
+    const aesKey = await crypto.subtle.importKey(
+      'raw',
+      cekBytes,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt']
+    )
+
+    const encryptedPayload = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv,
+          additionalData: textEncoder.encode(protectedHeaderB64),
+          tagLength: 128,
+        },
+        aesKey,
+        textEncoder.encode(plaintext)
+      )
+    )
+
+    const tag = encryptedPayload.slice(encryptedPayload.length - 16)
+    const ciphertext = encryptedPayload.slice(0, encryptedPayload.length - 16)
+
+    // ISC UI 포맷: 3_{<JWE_compact>}  — curly brace로 감싸야 connector가 복호화함
+    return `3_{${protectedHeaderB64}.${toBase64Url(encryptedKey)}.${toBase64Url(iv)}.${toBase64Url(ciphertext)}.${toBase64Url(tag)}}`
+  }
+
+  const decodeJweHeader = (value) => {
+    if (!value || typeof value !== 'string' || !value.startsWith('3_')) return null
+    try {
+      const firstDot = value.indexOf('.')
+      if (firstDot === -1) return null
+      const protectedHeaderB64 = value.slice(2, firstDot)
+      const padded = protectedHeaderB64
+        .replace(/-/g, '+')
+        .replace(/_/g, '/')
+        .padEnd(Math.ceil(protectedHeaderB64.length / 4) * 4, '=')
+      return JSON.parse(textDecoder.decode(Uint8Array.from(atob(padded), (c) => c.charCodeAt(0))))
+    } catch {
+      return null
     }
   }
 
-  const listAzureSources = async () => {
-    setSourceListLoading(true)
-    setSourceList(null)
-    setSourceListError(null)
+  const runDebugCompare = async () => {
+    if (!baselineSourceId.trim() || !candidateSourceId.trim()) {
+      setDebugError('Compare하려면 정상 소스 ID와 비교 대상 소스 ID가 모두 필요합니다.')
+      return
+    }
+
+    setDebugLoading(true)
+    setDebugError(null)
+    setBaselineSource(null)
+    setCandidateSource(null)
+
     try {
-      // Fetch up to 250 sources and filter for azure/ciem locally
-      const res = await fetch('/api/v3/sources?limit=250&sorters=name', {
-        headers: {
-          Authorization: `Bearer ${auth.token}`,
-          'X-Tenant': auth.tenant,
-        },
-      })
-      const text = await res.text()
-      let data
-      try { data = JSON.parse(text) } catch { data = null }
-      if (!res.ok) {
-        setSourceListError(`HTTP ${res.status}: ${data?.message || text.slice(0, 200)}`)
-        return
-      }
-      const all = Array.isArray(data) ? data : (data?.items ?? data?.data ?? [])
-      const keywords = ['azure', 'ciem', 'cam', 'entra']
-      const filtered = all.filter((s) => {
-        const hay = `${s.name || ''} ${s.connector || ''} ${s.description || ''}`.toLowerCase()
-        return keywords.some((k) => hay.includes(k))
-      })
-      setSourceList(
-        filtered.map((s) => ({
-          id: s.id,
-          name: s.name,
-          connector: s.connector,
-          connectionType: s.connectionType,
-          cluster: s.cluster ?? null,
-        }))
-      )
+      const [baseline, candidate] = await Promise.all([
+        fetchSource(baselineSourceId.trim()),
+        fetchSource(candidateSourceId.trim()),
+      ])
+      setBaselineSource(baseline)
+      setCandidateSource(candidate)
     } catch (err) {
-      setSourceListError(err.message)
+      setDebugError(err.message)
     } finally {
-      setSourceListLoading(false)
+      setDebugLoading(false)
     }
   }
 
@@ -307,9 +421,21 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
     if (!form.sourceName.trim()) errs.sourceName = 'Source name is required.'
     if (!form.ownerId) errs.owner = 'Select an owner from the search dropdown.'
     if (!form.connectorScriptName.trim()) errs.connectorScriptName = 'Connector script name is required.'
-    if (!form.clientId.trim()) errs.clientId = 'Client ID is required.'
-    if (!form.tenantId.trim()) errs.tenantId = 'Tenant ID is required.'
-    if (!form.clientSecret.trim()) errs.clientSecret = 'Client Secret is required.'
+    if (!form.organizationId.trim()) {
+      errs.organizationId = 'Organization ID is required.'
+    } else if (!ORG_ID_PATTERN.test(form.organizationId.trim())) {
+      errs.organizationId = 'Use the numeric GCP organization ID.'
+    }
+    if (!form.adminEmail.trim()) errs.adminEmail = 'Admin email is required.'
+    if (!form.credentials.trim()) {
+      errs.credentials = 'Credentials JSON is required.'
+    } else {
+      try {
+        JSON.parse(form.credentials)
+      } catch {
+        errs.credentials = 'Credentials must be valid JSON text.'
+      }
+    }
     setFieldErrors(errs)
     return Object.keys(errs).length === 0
   }
@@ -327,18 +453,17 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
       ownerId: form.ownerId,
       ownerName: form.ownerName,
       connectorScriptName: form.connectorScriptName,
-      clientId: form.clientId,
-      tenantId: form.tenantId,
-      clientSecret: form.clientSecret,
-      instanceIds: form.instanceIds,
-      tenantType: form.tenantType,
+      clusterId: form.clusterId,
+      organizationId: form.organizationId,
+      adminEmail: form.adminEmail,
+      credentials: form.credentials,
     }
 
-    /* ── Step A: Create source (without clientSecret — ISC can't encrypt it before the source exists) ── */
     setPhase('creating')
 
     let sourceId
     let createResponseData
+    let clusterId
 
     try {
       const res = await fetch('/api/v3/sources?provisionAsCsv=false', {
@@ -384,6 +509,7 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
       }
 
       sourceId = createResponseData?.id
+      clusterId = createResponseData?.cluster?.id || form.clusterId.trim()
     } catch (err) {
       setLoading(false)
       setPhase('idle')
@@ -400,17 +526,23 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
       return
     }
 
-    /* ── Step B: Patch connection settings (including client secret) ── */
     setPhase('patching')
 
+    let patchedSource = null
+    let localEncryptedGcpJSON = null
+
     try {
-      const patchOps = [
-        { op: 'add', path: '/connectorAttributes/applicationId', value: form.clientId.trim() },
-        { op: 'add', path: '/connectorAttributes/tenantID', value: form.tenantId.trim() },
-        { op: 'add', path: '/connectorAttributes/tenantType', value: form.tenantType },
-        { op: 'add', path: '/connectorAttributes/applicationSecret', value: form.clientSecret.trim() },
-        { op: 'add', path: '/connectorAttributes/applicationInstanceId', value: form.instanceIds.trim() || null },
-      ]
+      if (!clusterId) {
+        throw new Error('Cluster ID was not returned from source creation.')
+      }
+
+      const cluster = await fetchManagedCluster(clusterId)
+      const gcpJSON = await encryptForCluster({
+        sourceId,
+        publicKeyPem: cluster.publicKey || cluster.keyPair?.publicKey,
+        plaintext: form.credentials.trim(),
+      })
+      localEncryptedGcpJSON = gcpJSON
 
       const patchRes = await fetch(`/api/beta/sources/${sourceId}`, {
         method: 'PATCH',
@@ -419,7 +551,23 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
           'Content-Type': 'application/json-patch+json',
           'X-Tenant': auth.tenant,
         },
-        body: JSON.stringify(patchOps),
+        body: JSON.stringify([
+          {
+            op: 'add',
+            path: '/connectorAttributes/organizationId',
+            value: form.organizationId.trim(),
+          },
+          {
+            op: 'add',
+            path: '/connectorAttributes/adminEmail',
+            value: form.adminEmail.trim(),
+          },
+          {
+            op: 'add',
+            path: '/connectorAttributes/gcpJSON',
+            value: gcpJSON,
+          },
+        ]),
       })
 
       if (!patchRes.ok) {
@@ -438,12 +586,16 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
               patchData?.detailCode || patchData?.message || text.slice(0, 300)
             }`,
             createResponse: createResponseData,
+            localEncryptedGcpJSON,
+            localEncryptedGcpJSONHeader: decodeJweHeader(localEncryptedGcpJSON),
             rawResponse: patchData,
           },
           savedConfig
         )
         return
       }
+
+      patchedSource = await fetchSource(sourceId)
     } catch (err) {
       setLoading(false)
       setPhase('idle')
@@ -455,46 +607,27 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
           sourceId,
           error: err.message,
           createResponse: createResponseData,
-          rawResponse: null,
+          localEncryptedGcpJSON,
+          localEncryptedGcpJSONHeader: decodeJweHeader(localEncryptedGcpJSON),
+          rawResponse: patchedSource,
         },
         savedConfig
       )
       return
     }
 
-    /* ── Step B2: Mark source as connected ── */
-    try {
-      await fetch(`/api/beta/sources/${sourceId}`, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${auth.token}`,
-          'Content-Type': 'application/json-patch+json',
-          'X-Tenant': auth.tenant,
-        },
-        body: JSON.stringify([
-          { op: 'add', path: '/connectorAttributes/sourceConnected', value: true },
-        ]),
-      })
-    } catch {
-      // Non-fatal: proceed to test even if this fails
-    }
-
-    /* ── Step C: Test connection ── */
     setPhase('testing')
 
     try {
-      const res = await fetch(
-        `/api/beta/sources/${sourceId}/connector/test-configuration`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${auth.token}`,
-            'Content-Type': 'application/json',
-            'X-Tenant': auth.tenant,
-          },
-          body: '{}',
-        }
-      )
+      const res = await fetch(`/api/beta/sources/${sourceId}/connector/test-configuration`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          'Content-Type': 'application/json',
+          'X-Tenant': auth.tenant,
+        },
+        body: '{}',
+      })
 
       const text = await res.text()
       let testResponseData
@@ -504,28 +637,83 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
         testResponseData = { _raw: text }
       }
 
+      // ISC UI 기준: status === "SUCCESS" 만 성공, 그 외는 실패
+      const bodyStatus = testResponseData?.status
+      const testPassed =
+        res.ok &&
+        (bodyStatus === undefined ||
+          bodyStatus === null ||
+          String(bodyStatus).toUpperCase() === 'SUCCESS' ||
+          String(bodyStatus).toUpperCase() === 'PASSED')
+
+      if (!testPassed) {
+        setLoading(false)
+        setPhase('idle')
+        const testErrorMsg = res.ok
+          ? `Connection test failed: ${
+              testResponseData?.details?.error ||
+              Array.isArray(testResponseData?.errors)
+                ? testResponseData.errors?.join('; ')
+                : testResponseData?.message ||
+                  testResponseData?.detailCode ||
+                  `status=${bodyStatus}`
+            }`
+          : `HTTP ${res.status}: ${
+              testResponseData?.detailCode ||
+              testResponseData?.message ||
+              text.slice(0, 300)
+            }`
+        onResult(
+          {
+            success: false,
+            phase: 'test_connection',
+            sourceName: form.sourceName,
+            sourceId,
+            error: testErrorMsg,
+            createResponse: createResponseData,
+            patchResponse: patchedSource,
+            localEncryptedGcpJSON,
+            localEncryptedGcpJSONHeader: decodeJweHeader(localEncryptedGcpJSON),
+            rawResponse: testResponseData,
+          },
+          savedConfig
+        )
+        return
+      }
+
+      // ── Step D: sourceConnected=true PATCH (ISC UI가 테스트 성공 후 수행) ──
+      setPhase('finalizing')
+
+      try {
+        await fetch(`/api/beta/sources/${sourceId}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${auth.token}`,
+            'Content-Type': 'application/json-patch+json',
+            'X-Tenant': auth.tenant,
+          },
+          body: JSON.stringify([
+            { op: 'add', path: '/connectorAttributes/sourceConnected', value: true },
+          ]),
+        })
+      } catch {
+        // sourceConnected 패치 실패는 소스 생성/테스트 성공에 영향을 주지 않으므로 무시
+      }
+
       setLoading(false)
       setPhase('idle')
 
-      const testSuccess = res.ok && testResponseData?.status !== 'FAILURE'
-
       onResult(
         {
-          success: testSuccess,
+          success: true,
           phase: 'test_connection',
           sourceName: form.sourceName,
           sourceId,
-          error: testSuccess
-            ? null
-            : testResponseData?.status === 'FAILURE'
-            ? testResponseData?.details?.error ||
-              `Connection test failed: ${JSON.stringify(testResponseData?.details ?? {})}`
-            : `HTTP ${res.status}: ${
-                testResponseData?.detailCode ||
-                testResponseData?.message ||
-                text.slice(0, 300)
-              }`,
+          error: null,
           createResponse: createResponseData,
+          patchResponse: patchedSource,
+          localEncryptedGcpJSON,
+          localEncryptedGcpJSONHeader: decodeJweHeader(localEncryptedGcpJSON),
           rawResponse: testResponseData,
         },
         savedConfig
@@ -541,11 +729,32 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
           sourceId,
           error: err.message,
           createResponse: createResponseData,
+          patchResponse: patchedSource,
+          localEncryptedGcpJSON,
+          localEncryptedGcpJSONHeader: decodeJweHeader(localEncryptedGcpJSON),
           rawResponse: null,
         },
         savedConfig
       )
     }
+  }
+
+  const finishWithTestUnavailable = (sourceId, createResponseData, rawResponse, savedConfig) => {
+    setLoading(false)
+    setPhase('idle')
+    onResult(
+      {
+        success: true,
+        phase: 'test_connection_unavailable',
+        sourceName: form.sourceName,
+        sourceId,
+        warning: 'The source was created, but this tenant does not expose the GCP connector test endpoint over API. Verify the connection from the ISC UI if needed.',
+        createResponse: createResponseData,
+        rawResponse,
+      },
+      savedConfig
+    )
+    setCandidateSourceId(sourceId)
   }
 
   const inputCls = (field) =>
@@ -555,26 +764,23 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
 
   return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm">
-      {/* Header */}
       <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4">
-        <div className="w-12 h-12 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">
-          <span className="text-blue-600 font-bold text-sm tracking-tight">AZ</span>
+        <div className="w-12 h-12 bg-red-50 border border-red-100 rounded-xl flex items-center justify-center flex-shrink-0">
+          <span className="text-red-600 font-bold text-sm tracking-tight">GCP</span>
         </div>
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">CIEM Azure Configuration</h2>
+          <h2 className="text-xl font-semibold text-gray-900">CIEM GCP Configuration</h2>
           <p className="text-sm text-gray-500 mt-0.5">
-            Configure your source details and Azure connection settings.
+            Configure your source details and Google Cloud Platform connection settings.
           </p>
         </div>
       </div>
 
       <form onSubmit={handleSubmit} noValidate>
         <div className="px-8 py-7 space-y-8">
-          {/* ── Source Details ── */}
           <section>
             <SectionHeading>Source Details</SectionHeading>
             <div className="space-y-5">
-              {/* Name */}
               <FieldWrapper label="Source Name" required error={fieldErrors.sourceName}>
                 <input
                   type="text"
@@ -585,7 +791,6 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                 />
               </FieldWrapper>
 
-              {/* Description */}
               <FieldWrapper label="Description">
                 <input
                   type="text"
@@ -596,7 +801,6 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                 />
               </FieldWrapper>
 
-              {/* Owner search */}
               <FieldWrapper
                 label="Source Owner"
                 required
@@ -637,9 +841,6 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                               {searchError.raw}
                             </pre>
                           )}
-                          <p className="text-xs text-gray-400 mt-2">
-                            Common causes: token lacks <code className="bg-gray-100 px-1 rounded">idn:identities:read</code> scope, or the proxy is not running.
-                          </p>
                         </div>
                       ) : identities.length > 0 ? (
                         identities.map((identity) => {
@@ -702,11 +903,22 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
 
           <Divider />
 
-          {/* ── Connection Settings ── */}
           <section>
             <SectionHeading>Connection Settings</SectionHeading>
+            {/* Prefill banner */}
+            <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl mb-5 border ${prefillActive ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'}`}>
+              <span className="text-xs flex items-center gap-1.5">
+                <KeyIcon className={`w-3.5 h-3.5 ${prefillActive ? 'text-amber-500' : 'text-gray-400'}`} />
+                <span className={prefillActive ? 'text-amber-800 font-medium' : 'text-gray-500'}>
+                  {prefillActive ? 'Test credentials applied' : 'Use test credentials for this environment'}
+                </span>
+              </span>
+              <button type="button" onClick={applyPrefill} disabled={loading}
+                className={`text-xs font-medium px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50 ${prefillActive ? 'bg-amber-200 text-amber-900 hover:bg-amber-300' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>
+                {prefillActive ? 'Clear' : 'Apply'}
+              </button>
+            </div>
             <div className="space-y-5">
-              {/* Connector Script Name */}
               <FieldWrapper
                 label="Connector Script Name"
                 required
@@ -718,7 +930,7 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                     type="text"
                     value={form.connectorScriptName}
                     onChange={setField('connectorScriptName')}
-                    placeholder="e.g. ciem-azure"
+                    placeholder="e.g. ciem-gcp"
                     className={inputCls('connectorScriptName') + ' font-mono flex-1'}
                     disabled={loading}
                     spellCheck={false}
@@ -734,7 +946,6 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                   </button>
                 </div>
 
-                {/* Detect results */}
                 {detectError && (
                   <p className="mt-1.5 text-xs text-red-600 flex items-center gap-1">
                     <ExclamationIcon className="w-3.5 h-3.5 flex-shrink-0" />
@@ -744,7 +955,7 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                 {detectMatches !== null && !detectError && (
                   <div className="mt-2">
                     {detectMatches.length === 0 ? (
-                      <p className="text-xs text-amber-600">No Azure/CIEM connectors found in tenant. Enter the script name manually.</p>
+                      <p className="text-xs text-amber-600">No GCP/CIEM connectors found in tenant. Enter the script name manually.</p>
                     ) : detectMatches.length === 1 ? (
                       <p className="text-xs text-green-600 flex items-center gap-1">
                         <CheckCircleIcon className="w-3.5 h-3.5" />
@@ -775,95 +986,96 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                 )}
               </FieldWrapper>
 
-              {/* Client ID */}
               <FieldWrapper
-                label="Client ID"
-                required
-                error={fieldErrors.clientId}
-                hint="The Application (Client) ID of your Azure app registration."
+                label="Proxy Cluster Fallback ID"
+                badge="Advanced"
+                error={fieldErrors.clusterId}
+                hint="Normally returned automatically by the create-source response. This fallback is only used if the response omits cluster data."
               >
                 <input
                   type="text"
-                  value={form.clientId}
-                  onChange={setField('clientId')}
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  className={inputCls('clientId') + ' font-mono'}
+                  value={form.clusterId}
+                  onChange={setField('clusterId')}
+                  placeholder="52d554752d9b43aab1ea4a1edcfa4fc2"
+                  className={inputCls('clusterId') + ' font-mono'}
                   disabled={loading}
                   spellCheck={false}
                 />
               </FieldWrapper>
 
-              {/* Tenant ID */}
               <FieldWrapper
-                label="Tenant ID"
+                label="Organization ID"
                 required
-                error={fieldErrors.tenantId}
-                hint="The Directory (Tenant) ID of your Azure Active Directory."
+                error={fieldErrors.organizationId}
+                hint="Enter the numeric GCP Organization ID from the Google Cloud Console."
               >
                 <input
                   type="text"
-                  value={form.tenantId}
-                  onChange={setField('tenantId')}
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  className={inputCls('tenantId') + ' font-mono'}
+                  value={form.organizationId}
+                  onChange={setField('organizationId')}
+                  placeholder="1063145834985"
+                  className={inputCls('organizationId') + ' font-mono'}
                   disabled={loading}
                   spellCheck={false}
                 />
               </FieldWrapper>
 
-              {/* Client Secret */}
               <FieldWrapper
-                label="Client Secret"
+                label="Email with Admin Privileges"
                 required
-                error={fieldErrors.clientSecret}
-                hint="The client secret value for your Azure app registration."
+                error={fieldErrors.adminEmail}
+                hint="This must have admin access to the Google Admin Console and match your organization domain."
               >
                 <input
-                  type="password"
-                  value={form.clientSecret}
-                  onChange={setField('clientSecret')}
-                  placeholder="••••••••••••••••••••"
-                  className={inputCls('clientSecret')}
-                  disabled={loading}
-                  autoComplete="new-password"
-                />
-              </FieldWrapper>
-
-              {/* Instance IDs */}
-              <FieldWrapper
-                label="Instance IDs"
-                badge="Optional"
-                hint="Leave blank unless targeting specific Azure instances."
-              >
-                <input
-                  type="text"
-                  value={form.instanceIds}
-                  onChange={setField('instanceIds')}
-                  placeholder=""
-                  className={inputCls('instanceIds') + ' font-mono'}
+                  type="email"
+                  value={form.adminEmail}
+                  onChange={setField('adminEmail')}
+                  placeholder="admin@example.com"
+                  className={inputCls('adminEmail') + ' font-mono'}
                   disabled={loading}
                   spellCheck={false}
                 />
               </FieldWrapper>
 
-              {/* Tenant Type (read-only) */}
               <FieldWrapper
-                label="Tenant Type"
-                hint="Set to Global (Default) for standard Azure commercial tenants."
+                label="Credentials JSON"
+                required
+                error={fieldErrors.credentials}
+                hint="Paste the full JSON key for the GCP service account."
               >
-                <input
-                  type="text"
-                  readOnly
-                  value="Global (Default)"
-                  className="w-full px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500 cursor-not-allowed"
-                />
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <label className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors cursor-pointer">
+                      <UploadIcon className="w-4 h-4" />
+                      Upload JSON File
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={handleCredentialsFile}
+                        className="hidden"
+                        disabled={loading}
+                      />
+                    </label>
+                    <span className="text-xs text-gray-400">
+                      Or paste the JSON content below.
+                    </span>
+                  </div>
+
+                  <textarea
+                    value={form.credentials}
+                    onChange={setField('credentials')}
+                    placeholder='{"type":"service_account", ...}'
+                    className={inputCls('credentials') + ' min-h-56 font-mono resize-y'}
+                    disabled={loading}
+                    spellCheck={false}
+                  />
+                </div>
               </FieldWrapper>
             </div>
           </section>
 
           <Divider />
 
-          {/* ── Debug: Inspect Existing Source ── */}
           <section>
             <button
               type="button"
@@ -871,124 +1083,59 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
               className="w-full flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-600 transition-colors"
             >
               <span className="flex-1 h-px bg-gray-100" />
-              <span>Debug: Inspect Existing Source</span>
+              <span>Debug: Compare GCP Sources</span>
               <ChevronDownIcon className={`w-3.5 h-3.5 transition-transform duration-150 ${debugOpen ? 'rotate-180' : ''}`} />
               <span className="flex-1 h-px bg-gray-100" />
             </button>
 
             {debugOpen && (
               <div className="mt-4 space-y-4">
-                {/* Step 1: List Azure/CIEM sources */}
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-gray-600">
-                    Step 1 — Find the source created via ISC UI
-                  </p>
-                  <button
-                    type="button"
-                    onClick={listAzureSources}
-                    disabled={sourceListLoading}
-                    className="px-4 py-2 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 disabled:opacity-50 transition-colors flex items-center gap-1.5"
-                  >
-                    {sourceListLoading ? <Spinner className="text-indigo-600" /> : null}
-                    {sourceListLoading ? 'Loading…' : '🔍 List Azure / CIEM Sources'}
-                  </button>
+                <p className="text-xs text-gray-500">
+                  정상 GCP 소스와 앱으로 생성한 GCP 소스를 조회해서 <code className="font-mono">connectionType</code>, <code className="font-mono">cluster</code>, <code className="font-mono">connectorAttributes</code> 차이를 바로 확인합니다.
+                </p>
 
-                  {sourceListError && (
-                    <p className="text-xs text-red-600 font-mono">{sourceListError}</p>
-                  )}
-
-                  {sourceList !== null && !sourceListError && (
-                    <div className="rounded-xl border border-gray-200 overflow-hidden">
-                      {sourceList.length === 0 ? (
-                        <p className="px-4 py-3 text-xs text-gray-400 italic">No Azure/CIEM sources found in tenant.</p>
-                      ) : (
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="bg-gray-50 border-b border-gray-200">
-                              <th className="px-3 py-2 text-left font-medium text-gray-500">Name</th>
-                              <th className="px-3 py-2 text-left font-medium text-gray-500">Connector</th>
-                              <th className="px-3 py-2 text-left font-medium text-gray-500">ConnType</th>
-                              <th className="px-3 py-2 text-left font-medium text-gray-500">Cluster</th>
-                              <th className="px-3 py-2 text-left font-medium text-gray-500">Action</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-gray-100">
-                            {sourceList.map((s) => (
-                              <tr key={s.id} className="hover:bg-gray-50">
-                                <td className="px-3 py-2 font-medium text-gray-800">{s.name}</td>
-                                <td className="px-3 py-2 font-mono text-gray-600">{s.connector}</td>
-                                <td className="px-3 py-2">
-                                  <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${s.connectionType === 'direct' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                                    {s.connectionType ?? 'n/a'}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 text-gray-400 font-mono">{s.cluster?.id ?? 'null'}</td>
-                                <td className="px-3 py-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setDebugSourceId(s.id)
-                                      setDebugResult(null)
-                                    }}
-                                    className="px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
-                                  >
-                                    Inspect
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Step 2: Inspect selected source */}
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-gray-600">
-                    Step 2 — Inspect connectorAttributes of a source
-                  </p>
-                  <div className="flex gap-2">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FieldWrapper label="Baseline Source ID" hint="Known-good GCP source created from ISC UI.">
                     <input
                       type="text"
-                      value={debugSourceId}
-                      onChange={(e) => setDebugSourceId(e.target.value)}
-                      placeholder="Source ID (auto-filled by Inspect button above)"
-                      className="flex-1 px-3.5 py-2.5 text-sm border border-gray-300 rounded-xl font-mono outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      value={baselineSourceId}
+                      onChange={(e) => setBaselineSourceId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-xl font-mono outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       spellCheck={false}
                     />
-                    <button
-                      type="button"
-                      onClick={inspectSource}
-                      disabled={debugLoading || !debugSourceId.trim()}
-                      className="px-4 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 disabled:opacity-50 transition-colors flex items-center gap-1.5 whitespace-nowrap"
-                    >
-                      {debugLoading ? <Spinner className="text-blue-600" /> : null}
-                      {debugLoading ? 'Fetching…' : 'Fetch Details'}
-                    </button>
-                  </div>
+                  </FieldWrapper>
+
+                  <FieldWrapper label="Candidate Source ID" hint="New source created by this app.">
+                    <input
+                      type="text"
+                      value={candidateSourceId}
+                      onChange={(e) => setCandidateSourceId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-xl font-mono outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      spellCheck={false}
+                    />
+                  </FieldWrapper>
                 </div>
 
-                {debugResult && (
-                  <div className="rounded-xl border border-gray-200 overflow-hidden">
-                    {debugResult.error ? (
-                      <div className="p-3 bg-red-50 text-xs text-red-700 font-mono">{debugResult.error}</div>
-                    ) : (
-                      <>
-                        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex gap-4 text-xs text-gray-500">
-                          <span>connector: <code className="font-mono text-gray-700">{debugResult.connector}</code></span>
-                          <span>connectionType: <code className="font-mono text-gray-700">{debugResult.connectionType ?? 'n/a'}</code></span>
-                          <span>cluster: <code className="font-mono text-gray-700">{debugResult.cluster ?? 'null'}</code></span>
-                        </div>
-                        <div className="bg-gray-900 p-4 overflow-auto max-h-64">
-                          <p className="text-xs text-gray-400 mb-2 font-mono">connectorAttributes:</p>
-                          <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap">
-                            {JSON.stringify(debugResult.connectorAttributes, null, 2)}
-                          </pre>
-                        </div>
-                      </>
-                    )}
+                <button
+                  type="button"
+                  onClick={runDebugCompare}
+                  disabled={debugLoading}
+                  className="px-4 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                >
+                  {debugLoading ? <Spinner className="text-blue-600" /> : null}
+                  {debugLoading ? 'Comparing…' : 'Compare Sources'}
+                </button>
+
+                {debugError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 font-mono">
+                    {debugError}
+                  </div>
+                )}
+
+                {(baselineSource || candidateSource) && (
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <DebugSourceCard title="Baseline Source" data={baselineSource} />
+                    <DebugSourceCard title="Candidate Source" data={candidateSource} />
                   </div>
                 )}
               </div>
@@ -996,7 +1143,6 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
           </section>
         </div>
 
-        {/* Progress banner */}
         {loading && (
           <div className="mx-8 mb-4">
             <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
@@ -1006,23 +1152,25 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                   {phase === 'creating' && 'Creating source…'}
                   {phase === 'patching' && 'Saving credentials…'}
                   {phase === 'testing' && 'Testing connection…'}
+                  {phase === 'finalizing' && 'Finalizing…'}
                 </p>
                 <p className="text-xs text-blue-600 mt-0.5">
-                  {phase === 'creating' && 'Registering your CIEM Azure source with SailPoint ISC.'}
-                  {phase === 'patching' && 'Encrypting and storing the Client Secret.'}
-                  {phase === 'testing' && 'Verifying connectivity between SailPoint and your Azure environment.'}
+                  {phase === 'creating' && 'Registering your CIEM GCP source with SailPoint ISC.'}
+                  {phase === 'patching' && 'Saving the service account JSON to the source configuration.'}
+                  {phase === 'testing' && 'Verifying connectivity between SailPoint and your GCP organization.'}
+                  {phase === 'finalizing' && 'Marking source as connected.'}
                 </p>
                 <p className="text-xs text-blue-500 mt-1 font-mono">
-                  {phase === 'creating' && 'Step 1/3'}
-                  {phase === 'patching' && 'Step 2/3'}
-                  {phase === 'testing' && 'Step 3/3'}
+                  {phase === 'creating' && 'Step 1/4'}
+                  {phase === 'patching' && 'Step 2/4'}
+                  {phase === 'testing' && 'Step 3/4'}
+                  {phase === 'finalizing' && 'Step 4/4'}
                 </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* Action buttons */}
         <div className="px-8 pb-8 flex gap-3">
           <button
             type="button"
@@ -1044,6 +1192,7 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                 {phase === 'creating' && 'Creating Source…'}
                 {phase === 'patching' && 'Saving Credentials…'}
                 {phase === 'testing' && 'Testing Connection…'}
+                {phase === 'finalizing' && 'Finalizing…'}
               </>
             ) : (
               <>
@@ -1057,8 +1206,6 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
     </div>
   )
 }
-
-/* ── Layout helpers ── */
 
 function SectionHeading({ children }) {
   return (
@@ -1074,17 +1221,12 @@ function Divider() {
   return <div className="border-t border-gray-100" />
 }
 
-function FieldWrapper({ label, required, badge, hint, error, children }) {
+function FieldWrapper({ label, required, hint, error, children }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-1.5">
         <label className="text-sm font-medium text-gray-700">{label}</label>
         {required && <span className="text-red-500 text-sm leading-none">*</span>}
-        {badge && (
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
-            {badge}
-          </span>
-        )}
       </div>
       {children}
       {error ? (
@@ -1098,8 +1240,6 @@ function FieldWrapper({ label, required, badge, hint, error, children }) {
     </div>
   )
 }
-
-/* ── Icons ── */
 
 function Spinner({ className }) {
   return (
@@ -1137,7 +1277,15 @@ function ChevronLeftIcon({ className }) {
 function BoltIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+    </svg>
+  )
+}
+
+function KeyIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
     </svg>
   )
 }
@@ -1147,5 +1295,42 @@ function ChevronDownIcon({ className }) {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
     </svg>
+  )
+}
+
+function UploadIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 16.5v1A2.5 2.5 0 006.5 20h11a2.5 2.5 0 002.5-2.5v-1" />
+    </svg>
+  )
+}
+
+function DebugSourceCard({ title, data }) {
+  return (
+    <div className="rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+        <p className="text-sm font-semibold text-gray-800">{title}</p>
+      </div>
+      {!data ? (
+        <p className="px-4 py-6 text-xs text-gray-400 italic">No data loaded.</p>
+      ) : (
+        <>
+          <div className="px-4 py-3 text-xs text-gray-600 space-y-1 border-b border-gray-100">
+            <p>id: <code className="font-mono text-gray-800">{data.id}</code></p>
+            <p>connector: <code className="font-mono text-gray-800">{data.connector ?? 'n/a'}</code></p>
+            <p>connectionType: <code className="font-mono text-gray-800">{data.connectionType ?? 'n/a'}</code></p>
+            <p>cluster: <code className="font-mono text-gray-800">{data.cluster?.id ?? 'null'}</code></p>
+            <p>type: <code className="font-mono text-gray-800">{data.type ?? 'n/a'}</code></p>
+          </div>
+          <div className="bg-gray-900 p-4 overflow-auto max-h-80">
+            <p className="text-xs text-gray-400 mb-2 font-mono">connectorAttributes</p>
+            <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap">
+              {JSON.stringify(data.connectorAttributes ?? {}, null, 2)}
+            </pre>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

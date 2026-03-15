@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 export default function Step1Login({ onLogin }) {
-  const [form, setForm] = useState({ tenant: '', clientId: '', clientSecret: '' })
+  const [form, setForm] = useState({ tenant: '', domain: '.api.identitynow.com', clientId: '', clientSecret: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [showSecret, setShowSecret] = useState(false)
@@ -20,7 +20,7 @@ export default function Step1Login({ onLogin }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'X-Tenant': form.tenant,
+          'X-Tenant': `${form.tenant}${form.domain}`,
         },
         body: new URLSearchParams({
           grant_type: 'client_credentials',
@@ -50,7 +50,7 @@ export default function Step1Login({ onLogin }) {
         throw new Error('Response did not include an access_token.')
       }
 
-      onLogin({ tenant: form.tenant, token: data.access_token })
+      onLogin({ tenant: `${form.tenant}${form.domain}`, token: data.access_token })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -110,12 +110,17 @@ export default function Step1Login({ onLogin }) {
                 onChange={handleChange('tenant')}
                 className="flex-1 px-3 py-2.5 text-sm outline-none bg-white min-w-0"
               />
-              <span className="bg-gray-50 border-l border-gray-200 px-3 py-2.5 text-sm text-gray-400 whitespace-nowrap select-none">
-                .api.identitynow.com
-              </span>
+              <select
+                value={form.domain}
+                onChange={handleChange('domain')}
+                className="bg-gray-50 border-l border-gray-200 px-3 py-2.5 text-sm text-gray-600 outline-none cursor-pointer hover:bg-gray-100 transition-colors whitespace-nowrap"
+              >
+                <option value=".api.identitynow.com">.api.identitynow.com</option>
+                <option value=".api.identitynow-demo.com">.api.identitynow-demo.com</option>
+              </select>
             </div>
             <p className="mt-1 text-xs text-gray-400">
-              Your ISC tenant subdomain (the part before .api.identitynow.com)
+              Your ISC tenant subdomain and environment
             </p>
           </div>
 

@@ -2,6 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 const ARN_PATTERN = /^arn:aws:iam::/
 
+const PREFILL_CREDS = {
+  roleArn: 'arn:aws:iam::699264236613:role/SailPointCAMAuditRole',
+}
+
 export default function Step3ConfigureSource({ auth, initialConfig, onResult, onBack }) {
   const [form, setForm] = useState({
     sourceName: 'CIEM AWS',
@@ -12,8 +16,9 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
     roleArn: '',
     cloudTrailArn: '',
     cloudTrailBucketAccountId: '',
-    connectorScriptName: 'ciem-aws',
+    connectorScriptName: 'ciem-aws-connector-script',
   })
+  const [prefillActive, setPrefillActive] = useState(false)
 
   // Pre-fill when returning from Step 4 (error → go back)
   useEffect(() => {
@@ -22,13 +27,50 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
     }
   }, [initialConfig])
 
+  // Auto-fill owner with SailPoint Services from this tenant
+  useEffect(() => {
+    if (initialConfig?.ownerId) return
+    const autoFill = async () => {
+      try {
+        const res = await fetch('/api/v3/search', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${auth.token}`,
+            'Content-Type': 'application/json',
+            'X-Tenant': auth.tenant,
+          },
+          body: JSON.stringify({
+            indices: ['identities'],
+            query: { query: 'SailPoint Services' },
+            sort: ['name'],
+            limit: 5,
+          }),
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        const list = Array.isArray(data) ? data : (data?.data ?? data?.items ?? [])
+        const match = list.find(
+          (i) => (i.displayName || i.name || '').toLowerCase() === 'sailpoint services'
+        )
+        if (match) {
+          const label = match.displayName || match.name || match.id
+          setForm((f) => ({ ...f, ownerQuery: label, ownerId: match.id, ownerName: label }))
+        }
+      } catch { /* silent fail */ }
+    }
+    autoFill()
+  }, [auth]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const [identities, setIdentities] = useState([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState(null) // { status, message, raw }
   const [fieldErrors, setFieldErrors] = useState({})
   const [loading, setLoading] = useState(false)
-  const [phase, setPhase] = useState('idle') // 'idle' | 'creating' | 'testing'
+  const [phase, setPhase] = useState('idle') // 'idle' | 'creating' | 'patching' | 'testing'
+  const [detectLoading, setDetectLoading] = useState(false)
+  const [detectMatches, setDetectMatches] = useState(null)
+  const [detectError, setDetectError] = useState(null)
 
   const searchTimerRef = useRef(null)
   const dropdownRef = useRef(null)
@@ -139,6 +181,56 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
     const val = e.target.value
     setForm((f) => ({ ...f, [field]: val }))
     setFieldErrors((fe) => ({ ...fe, [field]: undefined }))
+    if (field === 'roleArn' && prefillActive) setPrefillActive(false)
+  }
+
+  const applyPrefill = () => {
+    if (prefillActive) {
+      setForm((f) => ({ ...f, roleArn: '' }))
+      setPrefillActive(false)
+    } else {
+      setForm((f) => ({ ...f, ...PREFILL_CREDS }))
+      setFieldErrors((fe) => ({ ...fe, roleArn: undefined }))
+      setPrefillActive(true)
+    }
+  }
+
+  const detectConnectors = async () => {
+    setDetectLoading(true)
+    setDetectMatches(null)
+    setDetectError(null)
+    try {
+      const res = await fetch('/api/v3/connectors?limit=250', {
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          'X-Tenant': auth.tenant,
+        },
+      })
+      const text = await res.text()
+      let data
+      try { data = JSON.parse(text) } catch { data = null }
+
+      if (!res.ok) {
+        setDetectError(`HTTP ${res.status}: ${data?.message || text.slice(0, 200)}`)
+        return
+      }
+
+      const list = Array.isArray(data) ? data : (data?.items ?? data?.data ?? [])
+      const keywords = ['aws', 'ciem', 'cam']
+      const matches = list.filter((c) => {
+        const haystack = `${c.scriptName || ''} ${c.name || ''} ${c.type || ''}`.toLowerCase()
+        return keywords.some((k) => haystack.includes(k))
+      })
+      setDetectMatches(matches)
+      if (matches.length === 1) {
+        setForm((f) => ({ ...f, connectorScriptName: matches[0].scriptName }))
+        setFieldErrors((fe) => ({ ...fe, connectorScriptName: undefined }))
+      }
+    } catch (err) {
+      setDetectError(err.message)
+    } finally {
+      setDetectLoading(false)
+    }
   }
 
   const validate = () => {
@@ -183,7 +275,7 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
     let createResponseData
 
     try {
-      const res = await fetch('/api/v3/sources', {
+      const res = await fetch('/api/v3/sources?provisionAsCsv=false', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${auth.token}`,
@@ -193,21 +285,8 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
         body: JSON.stringify({
           name: form.sourceName,
           description: form.description,
-          // ISC BaseReferenceDto requires type + id + name — omitting name
-          // passes JSON schema validation but triggers a 400.1 semantic error.
           owner: { type: 'IDENTITY', id: form.ownerId, name: form.ownerName },
           connector: form.connectorScriptName.trim(),
-          connectorAttributes: {
-            roleArn: form.roleArn.trim(),
-            // Omit optional ARN fields entirely when blank — ISC rejects
-            // empty strings on ARN-typed attributes with a 400.1 error.
-            ...(form.cloudTrailArn.trim()
-              ? { cloudTrailArn: form.cloudTrailArn.trim() }
-              : {}),
-            ...(form.cloudTrailBucketAccountId.trim()
-              ? { cloudTrailBucketAccountId: form.cloudTrailBucketAccountId.trim() }
-              : {}),
-          },
         }),
       })
 
@@ -255,12 +334,96 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
       return
     }
 
-    /* ── Step B: Test connection ── */
+    /* ── Step B: Patch connection settings ── */
+    setPhase('patching')
+
+    let patchResponseData = null
+
+    try {
+      // ISC UI가 사용하는 정확한 필드명 (HAR 분석으로 확인):
+      // - Role ARN → "roleName"
+      // - CloudTrail ARN → "cloudTrailARN"
+      // - CloudTrail Bucket Account ID → "cloudTrailBucketAccountID"
+      const patchOps = [
+        {
+          op: 'add',
+          path: '/connectorAttributes/roleName',
+          value: form.roleArn.trim(),
+        },
+        {
+          op: 'add',
+          path: '/connectorAttributes/cloudTrailARN',
+          value: form.cloudTrailArn.trim() || null,
+        },
+        {
+          op: 'add',
+          path: '/connectorAttributes/cloudTrailBucketAccountID',
+          value: form.cloudTrailBucketAccountId.trim() || null,
+        },
+      ]
+
+      // ISC UI는 /beta/sources/{id} 엔드포인트를 사용함 (/v3 아님)
+      const patchRes = await fetch(`/api/beta/sources/${sourceId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          'Content-Type': 'application/json-patch+json',
+          'X-Tenant': auth.tenant,
+        },
+        body: JSON.stringify(patchOps),
+      })
+
+      const patchText = await patchRes.text()
+      let patchDirectData
+      try { patchDirectData = JSON.parse(patchText) } catch { patchDirectData = { _raw: patchText } }
+
+      if (!patchRes.ok) {
+        setLoading(false)
+        setPhase('idle')
+        onResult(
+          {
+            success: false,
+            phase: 'patch_secret',
+            sourceName: form.sourceName,
+            sourceId,
+            error: `HTTP ${patchRes.status}: ${
+              patchDirectData?.detailCode || patchDirectData?.message || patchText.slice(0, 300)
+            }`,
+            createResponse: createResponseData,
+            rawResponse: patchDirectData,
+          },
+          savedConfig
+        )
+        return
+      }
+
+      // PATCH 응답 자체가 최신 소스 상태를 반환하므로 별도 GET 불필요
+      patchResponseData = patchDirectData
+    } catch (err) {
+      setLoading(false)
+      setPhase('idle')
+      onResult(
+        {
+          success: false,
+          phase: 'patch_secret',
+          sourceName: form.sourceName,
+          sourceId,
+          error: err.message,
+          createResponse: createResponseData,
+          patchResponse: patchResponseData,
+          rawResponse: null,
+        },
+        savedConfig
+      )
+      return
+    }
+
+    /* ── Step C: Test connection ── */
     setPhase('testing')
 
     try {
       const res = await fetch(
-        `/api/beta/sources/${sourceId}/connector/test-connection`,
+        `/api/beta/sources/${sourceId}/connector/test-configuration`,
         {
           method: 'POST',
           headers: {
@@ -283,20 +446,41 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
       setLoading(false)
       setPhase('idle')
 
+      // HTTP 200이어도 body의 status가 FAILED인 경우 테스트 실패로 처리
+      const bodyStatus = testResponseData?.status
+      const testPassed =
+        res.ok &&
+        (bodyStatus === undefined ||
+          bodyStatus === null ||
+          String(bodyStatus).toUpperCase() === 'SUCCESS' ||
+          String(bodyStatus).toUpperCase() === 'PASSED')
+
+      const testErrorMsg = testPassed
+        ? null
+        : res.ok
+        ? // HTTP 성공이지만 body status가 실패인 경우
+          `Connection test failed: ${
+            Array.isArray(testResponseData?.errors)
+              ? testResponseData.errors.join('; ')
+              : testResponseData?.message ||
+                testResponseData?.detailCode ||
+                `status=${bodyStatus}`
+          }`
+        : `HTTP ${res.status}: ${
+            testResponseData?.detailCode ||
+            testResponseData?.message ||
+            text.slice(0, 300)
+          }`
+
       onResult(
         {
-          success: res.ok,
+          success: testPassed,
           phase: 'test_connection',
           sourceName: form.sourceName,
           sourceId,
-          error: res.ok
-            ? null
-            : `HTTP ${res.status}: ${
-                testResponseData?.detailCode ||
-                testResponseData?.message ||
-                text.slice(0, 300)
-              }`,
+          error: testErrorMsg,
           createResponse: createResponseData,
+          patchResponse: patchResponseData,
           rawResponse: testResponseData,
         },
         savedConfig
@@ -312,6 +496,7 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
           sourceId,
           error: err.message,
           createResponse: createResponseData,
+          patchResponse: patchResponseData,
           rawResponse: null,
         },
         savedConfig
@@ -495,6 +680,19 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
           {/* ── Connection Settings ── */}
           <section>
             <SectionHeading>Connection Settings</SectionHeading>
+            {/* Prefill banner */}
+            <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl mb-5 border ${prefillActive ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'}`}>
+              <span className="text-xs flex items-center gap-1.5">
+                <KeyIcon className={`w-3.5 h-3.5 ${prefillActive ? 'text-amber-500' : 'text-gray-400'}`} />
+                <span className={prefillActive ? 'text-amber-800 font-medium' : 'text-gray-500'}>
+                  {prefillActive ? 'Test credentials applied' : 'Use test credentials for this environment'}
+                </span>
+              </span>
+              <button type="button" onClick={applyPrefill} disabled={loading}
+                className={`text-xs font-medium px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50 ${prefillActive ? 'bg-amber-200 text-amber-900 hover:bg-amber-300' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>
+                {prefillActive ? 'Clear' : 'Apply'}
+              </button>
+            </div>
             <div className="space-y-5">
               {/* Role ARN */}
               <FieldWrapper
@@ -556,22 +754,71 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
                 hint={
                   <>
                     The internal connector identifier registered in your ISC tenant.
-                    Pre-filled with <code className="bg-gray-100 px-1 rounded font-mono">ciem-aws</code>.
+                    Pre-filled with <code className="bg-gray-100 px-1 rounded font-mono">ciem-aws-connector-script</code>.
                     Change this only if your tenant uses a different script name, or if you see
                     a <em>"connector not found"</em> error — which means the CIEM module may not
                     be enabled for your tenant.
                   </>
                 }
               >
-                <input
-                  type="text"
-                  value={form.connectorScriptName}
-                  onChange={setField('connectorScriptName')}
-                  placeholder="ciem-aws"
-                  className={inputCls('connectorScriptName') + ' font-mono'}
-                  disabled={loading}
-                  spellCheck={false}
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={form.connectorScriptName}
+                    onChange={setField('connectorScriptName')}
+                    placeholder="e.g. ciem-aws-connector-script"
+                    className={inputCls('connectorScriptName') + ' font-mono flex-1'}
+                    disabled={loading}
+                    spellCheck={false}
+                  />
+                  <button
+                    type="button"
+                    onClick={detectConnectors}
+                    disabled={loading || detectLoading}
+                    className="px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 disabled:opacity-50 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    {detectLoading ? <Spinner className="text-blue-600" /> : null}
+                    {detectLoading ? 'Detecting…' : 'Detect'}
+                  </button>
+                </div>
+                {detectError && (
+                  <p className="mt-1.5 text-xs text-red-600 flex items-center gap-1">
+                    <ExclamationIcon className="w-3.5 h-3.5 flex-shrink-0" />
+                    {detectError}
+                  </p>
+                )}
+                {detectMatches !== null && !detectError && (
+                  <div className="mt-2">
+                    {detectMatches.length === 0 ? (
+                      <p className="text-xs text-amber-600">No AWS/CIEM connectors found in tenant. Enter the script name manually.</p>
+                    ) : detectMatches.length === 1 ? (
+                      <p className="text-xs text-green-600 flex items-center gap-1">
+                        <CheckCircleIcon className="w-3.5 h-3.5" />
+                        Auto-filled: <code className="font-mono">{detectMatches[0].scriptName}</code>
+                        {detectMatches[0].name && ` (${detectMatches[0].name})`}
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="text-xs text-gray-500">Multiple matches — select one:</p>
+                        {detectMatches.map((c) => (
+                          <button
+                            key={c.scriptName}
+                            type="button"
+                            onClick={() => {
+                              setForm((f) => ({ ...f, connectorScriptName: c.scriptName }))
+                              setFieldErrors((fe) => ({ ...fe, connectorScriptName: undefined }))
+                              setDetectMatches(null)
+                            }}
+                            className="block w-full text-left px-3 py-1.5 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-300 transition-colors"
+                          >
+                            {c.scriptName}
+                            {c.name && <span className="ml-2 font-sans text-gray-400">{c.name}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </FieldWrapper>
 
               {/* External ID (read-only) */}
@@ -597,16 +844,20 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
               <Spinner className="text-blue-600 mt-0.5 flex-shrink-0" />
               <div>
                 <p className="text-sm font-semibold text-blue-800">
-                  {phase === 'creating' ? 'Creating source…' : 'Testing connection…'}
+                  {phase === 'creating' && 'Creating source…'}
+                  {phase === 'patching' && 'Saving connection settings…'}
+                  {phase === 'testing' && 'Testing connection…'}
                 </p>
                 <p className="text-xs text-blue-600 mt-0.5">
-                  {phase === 'creating'
-                    ? 'Registering your CIEM AWS source with SailPoint ISC.'
-                    : 'Verifying connectivity between SailPoint and your AWS environment.'}
+                  {phase === 'creating' && 'Registering your CIEM AWS source with SailPoint ISC.'}
+                  {phase === 'patching' && 'Saving connector-specific settings to the new source.'}
+                  {phase === 'testing' && 'Verifying connectivity between SailPoint and your AWS environment.'}
                 </p>
-                {phase === 'testing' && (
-                  <p className="text-xs text-blue-500 mt-1 font-mono">Step 2/2</p>
-                )}
+                <p className="text-xs text-blue-500 mt-1 font-mono">
+                  {phase === 'creating' && 'Step 1/3'}
+                  {phase === 'patching' && 'Step 2/3'}
+                  {phase === 'testing' && 'Step 3/3'}
+                </p>
               </div>
             </div>
           </div>
@@ -631,7 +882,9 @@ export default function Step3ConfigureSource({ auth, initialConfig, onResult, on
             {loading ? (
               <>
                 <Spinner />
-                {phase === 'creating' ? 'Creating Source…' : 'Testing Connection…'}
+                {phase === 'creating' && 'Creating Source…'}
+                {phase === 'patching' && 'Saving Settings…'}
+                {phase === 'testing' && 'Testing Connection…'}
               </>
             ) : (
               <>
@@ -726,6 +979,14 @@ function BoltIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+    </svg>
+  )
+}
+
+function KeyIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
     </svg>
   )
 }

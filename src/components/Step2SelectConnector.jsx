@@ -2,117 +2,108 @@ export default function Step2SelectConnector({ onSelect, auth }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
       <div className="px-8 py-6 border-b border-gray-100">
-        <h2 className="text-xl font-semibold text-gray-900">Select Connector Type</h2>
+        <h2 className="text-xl font-semibold text-gray-900">Select Source Type</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Choose the type of CIEM source you want to configure.
+          Choose the type of source you want to configure.
         </p>
         {auth?.tenant && (
           <div className="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-green-50 border border-green-200 rounded-lg">
             <span className="w-2 h-2 bg-green-500 rounded-full" />
             <span className="text-xs font-medium text-green-700">
-              Connected to {auth.tenant}.api.identitynow.com
+              Connected to {auth.tenant}
             </span>
           </div>
         )}
       </div>
 
-      <div className="px-8 py-7 space-y-3">
-        {/* Available: CIEM AWS */}
-        <button
-          onClick={() => onSelect('ciem-aws')}
-          className="w-full group flex items-center gap-5 p-5 border-2 border-gray-200 rounded-2xl hover:border-blue-500 hover:bg-blue-50/50 hover:shadow-md transition-all duration-150 text-left"
-        >
-          <div className="w-14 h-14 bg-orange-50 border border-orange-100 rounded-xl flex items-center justify-center flex-shrink-0 group-hover:bg-orange-100 transition-colors">
-            <AwsLogo />
+      <div className="px-8 py-7 space-y-6">
+        {/* ── CIEM Sources ── */}
+        <div>
+          <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">CIEM Sources</p>
+          <div className="space-y-3">
+            <SourceCard
+              onClick={() => onSelect('ciem-aws')}
+              logo={<AwsLogo />}
+              logoBg="bg-orange-50 border-orange-100 group-hover:bg-orange-100"
+              name="CIEM AWS"
+              description="Cloud Infrastructure Entitlement Management for Amazon Web Services"
+              tags={['CIEM', 'AWS IAM', 'CloudTrail']}
+            />
+            <SourceCard
+              onClick={() => onSelect('ciem-azure')}
+              logo={<AzureLogo />}
+              logoBg="bg-blue-50 border-blue-100 group-hover:bg-blue-100"
+              name="CIEM Azure"
+              description="Cloud Infrastructure Entitlement Management for Microsoft Azure"
+              tags={['CIEM', 'Azure RBAC', 'Entra ID']}
+            />
+            <SourceCard
+              onClick={() => onSelect('ciem-gcp')}
+              logo={<GcpLogo />}
+              logoBg="bg-red-50 border-red-100 group-hover:bg-red-100"
+              name="CIEM GCP"
+              description="Cloud Infrastructure Entitlement Management for Google Cloud Platform"
+              tags={['CIEM', 'GCP IAM', 'Cloud Logging']}
+            />
           </div>
+        </div>
 
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-base font-semibold text-gray-900 group-hover:text-blue-800">
-                CIEM AWS
-              </span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                Available
-              </span>
-            </div>
-            <p className="text-sm text-gray-500 leading-snug">
-              Cloud Infrastructure Entitlement Management for Amazon Web Services
-            </p>
-            <div className="flex gap-2 mt-2">
-              <Tag>CIEM</Tag>
-              <Tag>AWS IAM</Tag>
-              <Tag>CloudTrail</Tag>
-            </div>
+        {/* ── Cloud Provider Sources ── */}
+        <div>
+          <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Cloud Provider Sources</p>
+          <div className="space-y-3">
+            <SourceCard
+              onClick={() => onSelect('cloud-aws')}
+              logo={<AwsLogo />}
+              logoBg="bg-orange-50 border-orange-100 group-hover:bg-orange-100"
+              name="AWS"
+              description="Amazon Web Services source with IAM User authentication and role-based access"
+              tags={['AWS IAM', 'IAM User', 'Multi-Account']}
+            />
+            <SourceCard
+              onClick={() => onSelect('cloud-azure-ad')}
+              logo={<AzureLogo />}
+              logoBg="bg-blue-50 border-blue-100 group-hover:bg-blue-100"
+              name="Azure Active Directory"
+              description="Microsoft Azure Active Directory source with OAuth2 Client Credentials"
+              tags={['Azure AD', 'OAuth2', 'Entra ID']}
+            />
+            <SourceCard
+              onClick={() => onSelect('cloud-gsuite')}
+              logo={<GSuiteLogo />}
+              logoBg="bg-green-50 border-green-100 group-hover:bg-green-100"
+              name="G Suite"
+              description="Google Workspace / G Suite source with GCP Cloud Resources support"
+              tags={['G Suite', 'GCP', 'OAuth2']}
+            />
           </div>
-
-          <ChevronRightIcon className="w-5 h-5 text-gray-300 group-hover:text-blue-500 flex-shrink-0 transition-colors" />
-        </button>
-
-        {/* Available: CIEM Azure */}
-        <button
-          onClick={() => onSelect('ciem-azure')}
-          className="w-full group flex items-center gap-5 p-5 border-2 border-gray-200 rounded-2xl hover:border-blue-500 hover:bg-blue-50/50 hover:shadow-md transition-all duration-150 text-left"
-        >
-          <div className="w-14 h-14 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-center flex-shrink-0 group-hover:bg-blue-100 transition-colors">
-            <AzureLogo />
-          </div>
-
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-base font-semibold text-gray-900 group-hover:text-blue-800">
-                CIEM Azure
-              </span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                Available
-              </span>
-            </div>
-            <p className="text-sm text-gray-500 leading-snug">
-              Cloud Infrastructure Entitlement Management for Microsoft Azure
-            </p>
-            <div className="flex gap-2 mt-2">
-              <Tag>CIEM</Tag>
-              <Tag>Azure RBAC</Tag>
-              <Tag>Entra ID</Tag>
-            </div>
-          </div>
-
-          <ChevronRightIcon className="w-5 h-5 text-gray-300 group-hover:text-blue-500 flex-shrink-0 transition-colors" />
-        </button>
-
-        {/* Coming soon: GCP */}
-        <ComingSoonCard
-          logo={<GcpLogo />}
-          name="CIEM GCP"
-          description="Cloud Infrastructure Entitlement Management for Google Cloud Platform"
-          tags={['CIEM', 'GCP IAM', 'Cloud Logging']}
-          logoBg="bg-red-50 border-red-100"
-        />
+        </div>
       </div>
     </div>
   )
 }
 
-function ComingSoonCard({ logo, name, description, tags, logoBg }) {
+function SourceCard({ onClick, logo, logoBg, name, description, tags }) {
   return (
-    <div className="w-full flex items-center gap-5 p-5 border-2 border-gray-100 rounded-2xl opacity-50 cursor-not-allowed select-none">
-      <div className={`w-14 h-14 ${logoBg} border rounded-xl flex items-center justify-center flex-shrink-0`}>
+    <button
+      onClick={onClick}
+      className="w-full group flex items-center gap-5 p-5 border-2 border-gray-200 rounded-2xl hover:border-blue-500 hover:bg-blue-50/50 hover:shadow-md transition-all duration-150 text-left"
+    >
+      <div className={`w-14 h-14 border rounded-xl flex items-center justify-center flex-shrink-0 transition-colors ${logoBg}`}>
         {logo}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-base font-semibold text-gray-700">{name}</span>
-          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
-            Coming Soon
-          </span>
+          <span className="text-base font-semibold text-gray-900 group-hover:text-blue-800">{name}</span>
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Available</span>
         </div>
-        <p className="text-sm text-gray-400 leading-snug">{description}</p>
+        <p className="text-sm text-gray-500 leading-snug">{description}</p>
         <div className="flex gap-2 mt-2">
-          {tags.map((t) => (
-            <Tag key={t} muted>{t}</Tag>
-          ))}
+          {tags.map((t) => <Tag key={t}>{t}</Tag>)}
         </div>
       </div>
-    </div>
+      <ChevronRightIcon className="w-5 h-5 text-gray-300 group-hover:text-blue-500 flex-shrink-0 transition-colors" />
+    </button>
   )
 }
 
@@ -163,6 +154,14 @@ function GcpLogo() {
     <svg viewBox="0 0 48 48" className="w-8 h-8" fill="none">
       <path d="M30 14H18l-8 14 8 14h12l8-14-8-14z" fill="#EA4335" opacity=".2" />
       <path d="M24 10c-7.7 0-14 6.3-14 14s6.3 14 14 14 14-6.3 14-14-6.3-14-14-14zm0 4a10 10 0 110 20 10 10 0 010-20z" fill="#4285F4" opacity=".6" />
+    </svg>
+  )
+}
+
+function GSuiteLogo() {
+  return (
+    <svg viewBox="0 0 48 48" className="w-8 h-8" fill="none">
+      <path d="M24 20h12.5c.3 1 .5 2 .5 4 0 5.7-3.8 9.8-13 9.8A13.8 13.8 0 0110.2 20 13.8 13.8 0 0124 6.2c3.7 0 6.8 1.4 9.2 3.6l-3.7 3.7C28.1 12 26.2 11 24 11c-4.9 0-9 4.1-9 9s4.1 9 9 9c5.7 0 7.9-4.1 8.2-6.2H24V20z" fill="#4285F4"/>
     </svg>
   )
 }

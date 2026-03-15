@@ -1,6 +1,6 @@
 # SailPoint ISC — CIEM Source Configurator
 
-A single-page web app that lets you configure a **SailPoint Identity Security Cloud (ISC) CIEM AWS source** through a clean UI wizard, replacing manual `curl` commands.
+A single-page web app that lets you configure **SailPoint Identity Security Cloud (ISC) CIEM sources** through a clean UI wizard, replacing manual `curl` commands.
 
 ---
 
@@ -9,8 +9,8 @@ A single-page web app that lets you configure a **SailPoint Identity Security Cl
 | Step | Description |
 |------|-------------|
 | 1 | Authenticate with your ISC tenant using Client Credentials OAuth |
-| 2 | Select a connector type (CIEM AWS — others coming soon) |
-| 3 | Fill in source details, search for an owner identity, and enter AWS settings |
+| 2 | Select a connector type (CIEM AWS, CIEM Azure, or CIEM GCP) |
+| 3 | Fill in source details, search for an owner identity, and enter cloud-specific settings |
 | 4 | See the result: source ID, connection test status, and raw API response |
 
 ---

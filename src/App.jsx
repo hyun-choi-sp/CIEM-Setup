@@ -4,6 +4,10 @@ import Step1Login from './components/Step1Login'
 import Step2SelectConnector from './components/Step2SelectConnector'
 import Step3ConfigureSource from './components/Step3ConfigureSource'
 import Step3ConfigureSourceAzure from './components/Step3ConfigureSourceAzure'
+import Step3ConfigureSourceGcp from './components/Step3ConfigureSourceGcp'
+import Step3ConfigureSourceCloudAws from './components/Step3ConfigureSourceCloudAws'
+import Step3ConfigureSourceCloudAzure from './components/Step3ConfigureSourceCloudAzure'
+import Step3ConfigureSourceCloudGsuite from './components/Step3ConfigureSourceCloudGsuite'
 import Step4Result from './components/Step4Result'
 
 export default function App() {
@@ -34,7 +38,15 @@ export default function App() {
     setStep(3)
   }
 
-  const handleReset = () => {
+  const handleAddAnotherSource = () => {
+    // Keep auth, go back to connector selection
+    setConnectorType(null)
+    setSourceResult(null)
+    setSourceConfig(null)
+    setStep(2)
+  }
+
+  const handleLogout = () => {
     setStep(1)
     setAuth(null)
     setConnectorType(null)
@@ -59,11 +71,19 @@ export default function App() {
             </div>
           </div>
 
-          {/* Tenant badge — visible once logged in */}
+          {/* Tenant badge + logout — visible once logged in */}
           {auth?.tenant && (
-            <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-100 px-3 py-1.5 rounded-lg">
-              <span className="w-2 h-2 bg-green-500 rounded-full" />
-              <span className="font-mono font-medium text-gray-700">{auth.tenant}</span>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-100 px-3 py-1.5 rounded-lg">
+                <span className="w-2 h-2 bg-green-500 rounded-full" />
+                <span className="font-mono font-medium text-gray-700">{auth.tenant}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Log out
+              </button>
             </div>
           )}
         </div>
@@ -100,11 +120,48 @@ export default function App() {
           />
         )}
 
+        {step === 3 && connectorType === 'ciem-gcp' && (
+          <Step3ConfigureSourceGcp
+            auth={auth}
+            initialConfig={sourceConfig}
+            onResult={handleSourceResult}
+            onBack={() => setStep(2)}
+          />
+        )}
+
+        {step === 3 && connectorType === 'cloud-aws' && (
+          <Step3ConfigureSourceCloudAws
+            auth={auth}
+            initialConfig={sourceConfig}
+            onResult={handleSourceResult}
+            onBack={() => setStep(2)}
+          />
+        )}
+
+        {step === 3 && connectorType === 'cloud-azure-ad' && (
+          <Step3ConfigureSourceCloudAzure
+            auth={auth}
+            initialConfig={sourceConfig}
+            onResult={handleSourceResult}
+            onBack={() => setStep(2)}
+          />
+        )}
+
+        {step === 3 && connectorType === 'cloud-gsuite' && (
+          <Step3ConfigureSourceCloudGsuite
+            auth={auth}
+            initialConfig={sourceConfig}
+            onResult={handleSourceResult}
+            onBack={() => setStep(2)}
+          />
+        )}
+
         {step === 4 && (
           <Step4Result
             result={sourceResult}
+            auth={auth}
             onGoBack={handleGoBack}
-            onReset={handleReset}
+            onAddAnother={handleAddAnotherSource}
           />
         )}
       </main>

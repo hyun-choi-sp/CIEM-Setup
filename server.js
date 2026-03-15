@@ -49,11 +49,12 @@ app.get('/', (_req, res) => {
 app.all('/api/*', async (req, res) => {
   const tenant = req.headers['x-tenant']
 
-  if (!tenant || !/^[a-zA-Z0-9-]+$/.test(tenant)) {
+  // Allow dots in the tenant string since it now includes the full domain
+  if (!tenant || !/^[a-zA-Z0-9-.]+$/.test(tenant)) {
     return res.status(400).json({
       error: 'missing_or_invalid_tenant',
       message:
-        'The X-Tenant request header is required and must be a valid subdomain (e.g. "mycompany").',
+        'The X-Tenant request header is required and must be a valid domain (e.g. "mycompany.api.identitynow.com").',
     })
   }
 
@@ -67,7 +68,8 @@ app.all('/api/*', async (req, res) => {
       ? '?' + new URLSearchParams(queryParams).toString()
       : ''
 
-  const targetUrl = `https://${tenant}.api.identitynow.com${iscPath}${queryString}`
+  // The tenant variable now contains the full domain
+  const targetUrl = `https://${tenant}${iscPath}${queryString}`
 
   // Forward all original headers, minus hop-by-hop and our custom ones
   const DROP_REQUEST_HEADERS = new Set([
@@ -105,13 +107,26 @@ app.all('/api/*', async (req, res) => {
       if (bodyStr) {
         fetchOptions.body = bodyStr
       }
-    } else if (ct.includes('application/json')) {
+    } else if (ct.includes('application/json') || ct.includes('application/json-patch+json')) {
       // Attach body if present — check works for both objects and arrays
+      // Covers: application/json, application/json-patch+json, application/merge-patch+json
       const hasBody = req.body != null && (
         Array.isArray(req.body) ? req.body.length > 0 : Object.keys(req.body).length > 0
       )
       if (hasBody) {
         fetchOptions.body = JSON.stringify(req.body)
+      }
+    } else if (ct.includes('multipart/form-data')) {
+      // Buffer the raw multipart body and forward it unchanged.
+      // express does not parse multipart so the stream is untouched.
+      // The Content-Type header (with boundary) is already in forwardHeaders.
+      const chunks = []
+      for await (const chunk of req) {
+        chunks.push(chunk)
+      }
+      const rawBody = Buffer.concat(chunks)
+      if (rawBody.length > 0) {
+        fetchOptions.body = rawBody
       }
     }
   }
@@ -168,8 +183,8 @@ app.listen(PORT, () => {
   console.log('  SailPoint ISC CIEM Configurator — Proxy Server')
   console.log('  ─────────────────────────────────────────────')
   console.log(`  Listening on  http://localhost:${PORT}`)
-  console.log(`  Forwarding    /api/* → https://{tenant}.api.identitynow.com/*`)
-  console.log(`  Tenant header X-Tenant: <your-tenant-subdomain>`)
+  console.log(`  Forwarding    /api/* → https://{tenant}/*`)
+  console.log(`  Tenant header X-Tenant: <your-tenant-domain>`)
   console.log('')
   console.log('  Keep this running while you use the Vite dev server.')
   console.log('  Use Ctrl+C to stop.')
