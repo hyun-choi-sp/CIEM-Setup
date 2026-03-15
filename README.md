@@ -30,6 +30,18 @@ cd /path/to/CIEM
 npm install
 ```
 
+### Environment Variables
+
+Before running the application, you must set up your local environment variables to pre-fill connection credentials for AWS, GCP, Azure, and G Suite. 
+
+1. Copy the provided template:
+   ```bash
+   cp .env.example .env
+   ```
+2. Open `.env` and fill in your actual credentials. 
+
+*(Note: The `.env` file is ignored by Git to prevent accidental credential leaks.)*
+
 ---
 
 ## Running the app
