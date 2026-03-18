@@ -1,5 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
+const PREFILL_CREDS = {
+  clientId: import.meta.env.VITE_AZURE_CLIENT_ID || '',
+  clientSecret: import.meta.env.VITE_AZURE_CLIENT_SECRET || '',
+  tenantId: import.meta.env.VITE_AZURE_TENANT_ID || '',
+}
+
 export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResult, onBack }) {
   const [form, setForm] = useState({
     sourceName: 'CIEM Azure',
@@ -14,6 +20,9 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
     instanceIds: '',
     tenantType: 'Global',
   })
+
+  const [prefillActive, setPrefillActive] = useState(false)
+  const [showSecrets, setShowSecrets] = useState({})
 
   // Pre-fill when returning from Step 4 (error → go back)
   useEffect(() => {
@@ -178,6 +187,23 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
     const val = e.target.value
     setForm((f) => ({ ...f, [field]: val }))
     setFieldErrors((fe) => ({ ...fe, [field]: undefined }))
+    if (prefillActive) setPrefillActive(false)
+  }
+
+  const applyPrefill = () => {
+    if (prefillActive) {
+      setForm((f) => ({
+        ...f,
+        clientId: '00000000-0000-0000-0000-000000000000',
+        clientSecret: 'azure-client-secret-example',
+        tenantId: '11111111-1111-1111-1111-111111111111'
+      }))
+      setPrefillActive(false)
+    } else {
+      setForm((f) => ({ ...f, ...PREFILL_CREDS }))
+      setFieldErrors((fe) => ({ ...fe, clientId: undefined, clientSecret: undefined, tenantId: undefined }))
+      setPrefillActive(true)
+    }
   }
 
   const detectConnectors = async () => {
@@ -705,6 +731,19 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
           {/* ── Connection Settings ── */}
           <section>
             <SectionHeading>Connection Settings</SectionHeading>
+            {/* Prefill banner */}
+            <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl mb-5 border ${prefillActive ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'}`}>
+              <span className="text-xs flex items-center gap-1.5">
+                <KeyIcon className={`w-3.5 h-3.5 ${prefillActive ? 'text-amber-500' : 'text-gray-400'}`} />
+                <span className={prefillActive ? 'text-amber-800 font-medium' : 'text-gray-500'}>
+                  {prefillActive ? 'Test credentials applied' : 'Use test credentials for this environment'}
+                </span>
+              </span>
+              <button type="button" onClick={applyPrefill} disabled={loading}
+                className={`text-xs font-medium px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50 ${prefillActive ? 'bg-amber-200 text-amber-900 hover:bg-amber-300' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>
+                {prefillActive ? 'Clear' : 'Apply'}
+              </button>
+            </div>
             <div className="space-y-5">
               {/* Connector Script Name */}
               <FieldWrapper
@@ -818,15 +857,20 @@ export default function Step3ConfigureSourceAzure({ auth, initialConfig, onResul
                 error={fieldErrors.clientSecret}
                 hint="The client secret value for your Azure app registration."
               >
-                <input
-                  type="password"
-                  value={form.clientSecret}
-                  onChange={setField('clientSecret')}
-                  placeholder="••••••••••••••••••••"
-                  className={inputCls('clientSecret')}
-                  disabled={loading}
-                  autoComplete="new-password"
-                />
+                <div className="relative">
+                  <input
+                    type={showSecrets.clientSecret ? 'text' : 'password'}
+                    value={form.clientSecret}
+                    onChange={setField('clientSecret')}
+                    placeholder="••••••••••••••••••••"
+                    className={inputCls('clientSecret') + ' pr-10'}
+                    disabled={loading}
+                    autoComplete="new-password"
+                  />
+                  <button type="button" tabIndex={-1} onClick={() => setShowSecrets((s) => ({ ...s, clientSecret: !s.clientSecret }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
+                    {showSecrets.clientSecret ? <EyeOffIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                  </button>
+                </div>
               </FieldWrapper>
 
               {/* Instance IDs */}
@@ -1149,3 +1193,9 @@ function ChevronDownIcon({ className }) {
     </svg>
   )
 }
+
+function KeyIcon({ className }) { return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg> }
+
+function EyeIcon({ className }) { return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg> }
+
+function EyeOffIcon({ className }) { return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"/></svg> }
